@@ -1,0 +1,297 @@
+
+version: '3.7'
+
+services:
+
+  gateway:
+    image: traefik:2.1
+    container_name: traefik
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "25m"
+    # Enables the web UI and tells Traefik to listen to docker
+    command:
+      #- "--log.level=DEBUG"
+      - "--api.dashboard=true"
+      - "--providers.docker"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.defaultRule="
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web-secure.address=:443"
+      #- "--entrypoints.web-alt.address=:4443"
+      # Certificate
+      #- "--certificatesresolvers.wildcard.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.wildcard.acme.dnschallenge=true"
+      - "--certificatesresolvers.wildcard.acme.dnschallenge.provider=ovh"
+      - "--certificatesresolvers.wildcard.acme.email=letsencrypt@ftranier.fr"
+      - "--certificatesresolvers.wildcard.acme.storage=/storage/acme.json"
+    ports:
+      # The HTTP port
+      - "80:80"
+      # The HTTPS port
+      - "443:443"
+      #- "8282:8282"
+    networks:
+      - private
+      - public
+    volumes:
+      # So that Traefik can listen to the Docker events
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /home/containers/traefik:/storage
+    labels:
+      # Middlewares declaration
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+      - "traefik.http.middlewares.basic-auth.basicauth.users=${TRAEFIK_BASIC_AUTH}"
+      # global wildcard certificates
+      - 'traefik.http.routers.traefik.tls.certresolver=wildcard'
+      - 'traefik.http.routers.traefik.tls.domains[0].main=${SERVER_HOSTNAME}'
+      - 'traefik.http.routers.traefik.tls.domains[0].sans=*.${SERVER_HOSTNAME}'
+      - "traefik.http.routers.traefik.rule=Host(`gateway.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.traefik.entrypoints=web"
+      - "traefik.http.routers.traefik.middlewares=redirect-https"
+      # Container configuration
+      - "traefik.enable=true"
+      - "traefik.http.routers.gateway.rule=Host(`gateway.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.gateway.entrypoints=web-secure"
+      - "traefik.http.routers.gateway.service=api@internal"
+      - "traefik.http.routers.gateway.tls=true"
+      - "traefik.http.routers.gateway.middlewares=basic-auth"
+    environment:
+      - OVH_APPLICATION_KEY=${OVH_APPLICATION_KEY}
+      - OVH_APPLICATION_SECRET=${OVH_APPLICATION_SECRET}
+      - OVH_CONSUMER_KEY=${OVH_CONSUMER_KEY}
+      - OVH_ENDPOINT=${OVH_ENDPOINT}
+
+  # download:
+  #   image: jpillora/cloud-torrent
+  #   container_name: cloud-torrent
+  #   restart: always
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #         max-size: "25m"
+  #   depends_on:
+  #     - gateway
+  #   networks:
+  #     - private
+  #   labels:
+  #     # Container configuration
+  #     - "traefik.enable=true"
+  #     - "traefik.http.routers.download-insecure.rule=Host(`download.${SERVER_HOSTNAME}`)"
+  #     - "traefik.http.routers.download-insecure.entrypoints=web"
+  #     - "traefik.http.routers.download-insecure.middlewares=redirect-https"
+
+  #     - "traefik.http.routers.download.rule=Host(`download.${SERVER_HOSTNAME}`)"
+  #     - "traefik.http.routers.download.entrypoints=web-secure"
+  #     - "traefik.http.routers.download.tls=true"
+  #     - "traefik.http.routers.download.middlewares=basic-auth"
+  #     - "traefik.http.services.download.loadbalancer.server.port=3000"
+  #   volumes:
+  #     - /home/containers/shared_fs/downloads:/downloads
+  #   healthcheck:
+  #     test:          wget --quiet --tries=1 --spider http://localhost:3000
+  #     #retries:      4
+  #     #interval:     30s
+  #     #timeout:      25s
+  #     #start_period: 0s
+
+  download:
+    image: ghcr.io/linuxserver/deluge
+    container_name: deluge
+    network_mode: host
+    environment:
+      - PUID=0
+      - PGID=0
+      - TZ=Europe/London
+      - UMASK_SET=022 #optional
+      - DELUGE_LOGLEVEL=error #optional
+    volumes:
+      - /home/containers/deluge/config:/config
+      - /home/containers/shared_fs/downloads:/downloads
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "25m"
+    depends_on:
+      - gateway
+    networks:
+      - private
+    labels:
+      # Container configuration
+      - "traefik.enable=true"
+      - "traefik.http.routers.download-insecure.rule=Host(`download.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.download-insecure.entrypoints=web"
+      - "traefik.http.routers.download-insecure.middlewares=redirect-https"
+
+      - "traefik.http.routers.download.rule=Host(`download.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.download.entrypoints=web-secure"
+      - "traefik.http.routers.download.tls=true"
+      - "traefik.http.routers.download.middlewares=basic-auth"
+      - "traefik.http.services.download.loadbalancer.server.port=8112"
+    healthcheck:
+      test:          wget --quiet --tries=1 --spider http://localhost:8112
+      #retries:      4
+      #interval:     30s
+      #timeout:      25s
+      #start_period: 0s
+
+  watch:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    restart: always
+    user: 0:0
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "25m"
+    networks:
+      - private
+    depends_on:
+      - gateway
+    labels:
+      # Container configuration
+      - "traefik.enable=true"
+      - "traefik.http.routers.watch-insecure.rule=Host(`watch.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.watch-insecure.entrypoints=web"
+      - "traefik.http.routers.watch-insecure.middlewares=redirect-https"
+
+      - "traefik.http.routers.watch.rule=Host(`watch.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.watch.entrypoints=web-secure"
+      - "traefik.http.routers.watch.tls=true"
+      #- "traefik.http.routers.watch.middlewares=basic-auth"
+      - "traefik.http.services.watch.loadbalancer.server.port=8096"
+    volumes:
+      - "/home/containers/emby/config:/config"
+      - "/home/containers/emby/cache:/cache"
+      - "/home/containers/emby/media:/media"
+      - "/home/containers/shared_fs:/shared_fs"
+    healthcheck:
+      test:          curl --fail --silent http://localhost:8096
+      #retries:      4
+      #interval:     30s
+      #timeout:      25s
+      #start_period: 0s
+
+  files:
+    image: coderaiser/cloudcmd
+    container_name: cloud-commander
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "25m"
+    depends_on:
+      - gateway
+    networks:
+      - private
+    volumes:
+      - "/home/containers/shared_fs/downloads:/mnt/fs/downloads"
+      - "/home/containers/emby/media:/mnt/fs"
+    labels:
+      # Container configuration
+      - "traefik.enable=true"
+      - "traefik.http.routers.files.middlewares=basic-auth"
+      - "traefik.http.routers.files-insecure.rule=Host(`files.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.files-insecure.entrypoints=web"
+      - "traefik.http.routers.files-insecure.service=files"
+      - "traefik.http.routers.files-insecure.middlewares=redirect-https@docker"
+
+      - "traefik.http.routers.files.rule=Host(`files.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.files.entrypoints=web-secure"
+      - "traefik.http.routers.files.tls=true"
+      - "traefik.http.routers.files.service=files"
+      - "traefik.http.services.files.loadbalancer.server.port=8000"
+      #- "traefik.http.routers.files.middlewares=basic-auth@docker"
+      #- "traefik.http.routers.files-grpc.entrypoints=web-alt"
+      #- "traefik.http.routers.files-grpc.service=files-grpc"
+      #- "traefik.http.services.files-grpc.loadbalancer.server.scheme=h2c"
+      #- "traefik.http.services.files-grpc.loadbalancer.server.port=8282"
+    healthcheck:
+      test:          wget --quiet --tries=1 --spider http://localhost:8000
+      #retries:      4
+      #interval:     30s
+      #timeout:      25s
+      #start_period: 0s
+
+  monitor:
+    image: gcr.io/google-containers/cadvisor:latest
+    container_name: cadvisor
+    restart: always
+    privileged: true
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "25m"
+    depends_on:
+      - gateway
+    networks:
+      - private
+    command: [ --docker="unix:///var/run/docker-userns.sock" ]
+    labels:
+      # Container configuration
+      - "traefik.enable=true"
+      - "traefik.http.routers.monitor-insecure.rule=Host(`monitor.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.monitor-insecure.entrypoints=web"
+      - "traefik.http.routers.monitor-insecure.middlewares=redirect-https"
+
+      - "traefik.http.routers.monitor.rule=Host(`monitor.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.monitor.entrypoints=web-secure"
+      - "traefik.http.routers.monitor.tls=true"
+      - "traefik.http.routers.monitor.middlewares=basic-auth"
+      - "traefik.http.services.monitor.loadbalancer.server.port=8080"
+    volumes:
+      - "/:/rootfs:ro"
+      - "/var/run:/var/run:ro"
+      - "/sys:/sys:ro"
+      - "/var/lib/docker/:/var/lib/docker:ro"
+      - "/dev/disk/:/dev/disk:ro"
+    healthcheck:
+      test:          wget --quiet --tries=1 --spider http://localhost:8080/containers
+      #retries:      4
+      #interval:     30s
+      #timeout:      25s
+      #start_period: 0s
+
+  sonarr:
+    image: ghcr.io/linuxserver/sonarr
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/London
+      - UMASK_SET=022 #optional
+    volumes:
+      - "/home/containers/shared_fs/downloads:/downloads"
+      - "/home/containers/sonarr/config:/config"
+      - "/home/containers/emby/media/Séries:/tv"
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+          max-size: "25m"
+    networks:
+      - private
+    depends_on:
+      - gateway
+    labels:
+      # Container configuration
+      - "traefik.enable=true"
+      - "traefik.http.routers.sonarr-insecure.rule=Host(`sonarr.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.sonarr-insecure.entrypoints=web"
+      - "traefik.http.routers.sonarr-insecure.middlewares=redirect-https"
+
+      - "traefik.http.routers.sonarr.rule=Host(`sonarr.${SERVER_HOSTNAME}`)"
+      - "traefik.http.routers.sonarr.entrypoints=web-secure"
+      - "traefik.http.routers.sonarr.tls=true"
+      - "traefik.http.routers.sonarr.middlewares=basic-auth"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+
+
+networks:
+  public:
+  private:
